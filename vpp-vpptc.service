@@ -1,0 +1,51 @@
+[Unit]
+Description=Apply policer configuration (vpptc)
+# Bergantung pada vpp.service (VPP harus hidup) dan pada vpp-vppcfg.service
+# (interface target harus sudah dibuat lebih dulu).
+#
+# PENTING: memakai After=, BUKAN Requires=, agar unit ini TIDAK menarik
+# vpp-vppcfg untuk hidup. Ketergantungan diwujudkan lewat symlink
+# vpp-vppcfg.service.wants/, sehingga vpp-vppcfg yang dinonaktifkan otomatis
+# membuat unit ini ikut tidak jalan.
+#
+# Manual start DIIZINKAN: vpptc adalah reconciler - ia membaca runtime VPP dan
+# hanya mengubah yang berbeda. Dijalankan berulang pada VPP yang sudah dikonfigurasi
+# hasilnya "In-Sync (Tidak ada perubahan)", jadi aman. Ini juga cara termudah
+# menerapkan perubahan vpptc.yaml tanpa me-restart VPP.
+# Manual stop/restart DITOLAK: stop tidak mencabut policer dari dataplane sehingga
+# hanya memberi ilusi, dan restart ikut tertolak karena restart = stop + start.
+# Gunakan systemctl disable untuk menjeda.
+After=vpp.service vpp-vppcfg.service
+PartOf=vpp.service
+RefuseManualStart=no
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+# Penjaga: pastikan vpp-vppcfg sudah apply pada instance VPP yang sama.
+# Isi /run/vpp-vppcfg.applied = MainPID vpp.service saat apply berhasil.
+ExecStartPre=/bin/sh -c 'test -r /run/vpp-vppcfg.applied || { echo "GAGAL: /run/vpp-vppcfg.applied belum ada - apply vpp-vppcfg terakhir tidak sukses pada instance VPP ini (belum pernah dijalankan, atau kegagalan sebelumnya). Jalankan: systemctl start vpp-vppcfg"; exit 1; }; test "$(cat /run/vpp-vppcfg.applied)" = "$(systemctl show vpp.service -p MainPID --value)" || { echo "GAGAL: vpp-vppcfg belum apply pada instance VPP ini (marker PID $(cat /run/vpp-vppcfg.applied) != MainPID VPP $(systemctl show vpp.service -p MainPID --value)). Jalankan: systemctl start vpp-vppcfg"; exit 1; }'
+# Memakai vpptc, BUKAN "vppctl exec vpptc.vpp".
+#
+# Alasannya: vpptc adalah reconciler - ia membaca state runtime VPP, menghitung
+# diff terhadap /etc/vpp/vpptc.yaml, lalu hanya mengubah yang berbeda
+# (add baru, lepas & pasang yang berubah, hapus yang tak terpakai). Perintah
+# "vppctl exec" bersifat one-shot-add dan TIDAK idempoten: dijalankan ulang saat
+# policer sudah ada akan gagal "policer add: already exists", membatalkan sisa
+# file, dan membuat perubahan konfigurasi TIDAK berlaku. Empat langkah urutannya
+# (add -> unapply -> apply -> del) beserta rollback policer yatim juga otomatis
+# ditangani vpptc, termasuk regenerasi /etc/vpp/vpptc.vpp.
+#
+# Exit code vpptc sudah bisa dipercaya: tool ini memeriksa output vppctl
+# (selalu exit 0) memakai pola error yang sudah dikodekan eksplisit di dalam tool.
+ExecStart=/usr/local/bin/vpptc
+# Verifikasi akhir: jumlah "policer add" pada file startup (yang baru saja
+# di-update vpptc) harus sama dengan jumlah policer vpptc-* di VPP.
+ExecStartPost=/bin/sh -c 'test -r /etc/vpp/vpptc.vpp || { echo "FATAL: /etc/vpp/vpptc.vpp tidak ada atau tidak terbaca"; exit 1; }; test "$(grep -c "^policer add name" /etc/vpp/vpptc.vpp)" -eq "$(vppctl -s /run/vpp/cli.sock show policer | grep -c "^Name .vpptc-")"'
+# TIDAK ada Restart=on-failure: vpptc sudah idempoten, tetapi kegagalan
+# konfigurasi (interface tidak ada, YAML tidak valid) tidak akan diperbaiki
+# dengan mencoba lagi - mengulang hanya menambah noise di journal. Perbaiki
+# sumbernya lalu jalankan ulang vpp-vppcfg (atau restart vpp).
+
+[Install]
+WantedBy=vpp-vppcfg.service

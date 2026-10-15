@@ -1,0 +1,46 @@
+[Unit]
+Description=Apply declarative VPP config (vppcfg)
+After=vpp.service
+PartOf=vpp.service
+# Manual start DIIZINKAN: vppcfg apply bersifat diff-based (idempoten), jadi
+# menjalankan ulang aman dan berguna untuk menerapkan perubahan YAML tanpa
+# me-restart VPP.
+# Manual stop DITOLAK: unit ini oneshot tanpa ExecStop, jadi stop tidak menarik
+# apa pun dari dataplane - konfigurasi interface tetap menempel di VPP. Membuka
+# stop hanya memberi ilusi "sudah dimatikan". Gunakan systemctl disable untuk
+# menjeda.
+RefuseManualStart=no
+RefuseManualStop=yes
+
+# Retry dibatasi jelas: kegagalan yang berulang (mis. PHY tidak muncul) tidak
+# akan diperbaiki dengan mencoba lagi, jadi jangan membanjiri journal. Setelah
+# 5 kegagalan dalam 60 detik unit dikunci failed; operator restart VPP atau
+# perbaiki penyebabnya. vppcfg apply idempoten, jadi retry sendiri tetap aman.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+[Service]
+Type=oneshot
+# Hapus marker DI AWAL setiap eksekusi: dengan begitu file hanya ada kalau apply
+# yang terbaru benar-benar sukses. Tanpa ini, apply yang gagal setelah apply
+# sebelumnya pada instance VPP yang sama akan meninggalkan marker basi yang
+# kebetulan cocok, sehingga vpp-vpptc salah menganggap config sudah terpasang.
+ExecStartPre=/usr/bin/rm -f /run/vpp-vppcfg.applied
+# Tunggu VPP benar-benar siap: CLI socket answering.
+# Batas 60 detik dihitung DI DALAM script (bukan memakai timeout eksternal),
+# supaya saat batas terlampaui diagnosis tetap bisa dicetak: alasan kegagalan
+# (mis. connection refused / socket belum ada) + isi /run/vpp/.
+# Catatan escaping: $$ menghasilkan karakter $ harfiah untuk shell.
+ExecStartPre=/bin/sh -c 'i=0; while ! /usr/bin/vppctl -s /run/vpp/cli.sock show version >/dev/null 2>&1; do i=$$((i+1)); if [ "$$i" -ge 60 ]; then echo "FATAL: VPP CLI tidak siap dalam 60 detik. Diagnosis:"; /usr/bin/vppctl -s /run/vpp/cli.sock show version; echo "Isi /run/vpp/:"; ls -l /run/vpp/; exit 1; fi; sleep 1; done'
+# vppcfg sudah memvalidasi YAML internal sebelum apply (lihat log:
+# "Configuration validated successfully") dan exit non-zero bila gagal.
+ExecStart=/usr/local/bin/vppcfg apply -c /etc/vpp/vppcfg.yaml -a /run/vpp/api.sock
+# Tandai instance VPP ini sudah di-apply (isi file = MainPID vpp.service).
+# Dipakai vpp-vpptc untuk memastikan policer hanya di-apply SETELAH config
+# interface terpasang pada instance VPP yang sama. File ini di /run, jadi hilang
+# otomatis tiap reboot dan tidak perlu manualmente dihapus.
+ExecStartPost=/bin/sh -c 'systemctl show vpp.service -p MainPID --value > /run/vpp-vppcfg.applied'
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=vpp.service
