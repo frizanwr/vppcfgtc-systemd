@@ -28,20 +28,20 @@ ExecStartPre=/bin/sh -c 'test -r /run/vpp-vppcfg.applied || { echo "GAGAL: /run/
 # Memakai vpptc, BUKAN "vppctl exec vpptc.vpp".
 #
 # Alasannya: vpptc adalah reconciler - ia membaca state runtime VPP, menghitung
-# diff terhadap /etc/vpp/vpptc.yaml, lalu hanya mengubah yang berbeda
+# diff terhadap /etc/vpp/vpptc/vpptc.yaml, lalu hanya mengubah yang berbeda
 # (add baru, lepas & pasang yang berubah, hapus yang tak terpakai). Perintah
 # "vppctl exec" bersifat one-shot-add dan TIDAK idempoten: dijalankan ulang saat
 # policer sudah ada akan gagal "policer add: already exists", membatalkan sisa
 # file, dan membuat perubahan konfigurasi TIDAK berlaku. Empat langkah urutannya
 # (add -> unapply -> apply -> del) beserta rollback policer yatim juga otomatis
-# ditangani vpptc, termasuk regenerasi /etc/vpp/vpptc.vpp.
+# ditangani vpptc, termasuk regenerasi /etc/vpp/vpptc/vpptc.vpp.
 #
 # Exit code vpptc sudah bisa dipercaya: tool ini memeriksa output vppctl
 # (selalu exit 0) memakai pola error yang sudah dikodekan eksplisit di dalam tool.
 ExecStart=/usr/local/bin/vpptc
 # Verifikasi akhir: jumlah "policer add" pada file startup (yang baru saja
 # di-update vpptc) harus sama dengan jumlah policer vpptc-* di VPP.
-ExecStartPost=/bin/sh -c 'test -r /etc/vpp/vpptc.vpp || { echo "FATAL: /etc/vpp/vpptc.vpp tidak ada atau tidak terbaca"; exit 1; }; test "$(grep -c "^policer add name" /etc/vpp/vpptc.vpp)" -eq "$(vppctl -s /run/vpp/cli.sock show policer | grep -c "^Name .vpptc-")"'
+ExecStartPost=/bin/sh -c 'test -r /etc/vpp/vpptc/vpptc.vpp || { echo "FATAL: /etc/vpp/vpptc/vpptc.vpp tidak ada atau tidak terbaca"; exit 1; }; test "$(grep -c "^policer add name" /etc/vpp/vpptc/vpptc.vpp)" -eq "$(vppctl -s /run/vpp/cli.sock show policer | grep -c "^Name .vpptc-")"'
 # TIDAK ada Restart=on-failure: vpptc sudah idempoten, tetapi kegagalan
 # konfigurasi (interface tidak ada, YAML tidak valid) tidak akan diperbaiki
 # dengan mencoba lagi - mengulang hanya menambah noise di journal. Perbaiki
